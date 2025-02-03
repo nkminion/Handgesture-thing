@@ -1,11 +1,11 @@
 #Importing libraries and defining variables
 import mediapipe as mp 
-from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from mediapipe import solutions
 from mediapipe.framework.formats import landmark_pb2
 import numpy as np
 import cv2 as cv
+import time
 
 ModelPath = '/home/nkminion/Desktop/Python/HandGesture/hand_landmarker.task'
 BaseOptions = mp.tasks.BaseOptions
@@ -18,68 +18,121 @@ Timestamp = 0
 Increment = 10
 WindowName = 'OutputWindow'
 
-#Creating Hand Landmarker
+#Landmarker stuff
+class LandmarkerAndResult():
+	def __init__(self):
+		self.result = vision.HandLandmarkerResult
+		self.landmarker = vision.HandLandmarker
+		self.createLandmarker()
 
-opts = HandLandMarkerOptions(
-	base_options = BaseOptions(model_asset_path = ModelPath))
+	def createLandmarker(self):
+		#Callback function
+		def PrintRes(result: vision.HandLandmarkerResult , output_image: mp.Image , timestamp_ms: int):
+			self.result = result
 
-landmarker = HandLandMarker.create_from_options(opts)
+		options = vision.HandLandmarkerOptions(
+			base_options = mp.tasks.BaseOptions(model_asset_path=ModelPath),
+			running_mode = VisionRunningMode.LIVE_STREAM,
+			num_hands = 1,
+			min_hand_detection_confidence = 0.3,
+			min_hand_presence_confidence = 0.3,
+			min_tracking_confidence = 0.3,
+			result_callback = PrintRes
+		)
 
-# Annotating Landmarks
-MARGIN = 10  # pixels
-FONT_SIZE = 1
-FONT_THICKNESS = 1
-HANDEDNESS_TEXT_COLOR = (88, 205, 54) # vibrant green
+		self.landmarker = self.landmarker.create_from_options(options)
 
-def draw_landmarks_on_image(rgb_image, detection_result):
-    hand_landmarks_list = detection_result.hand_landmarks
-    handedness_list = detection_result.handedness
-    annotated_image = np.copy(rgb_image)
-    # Loop through the detected hands to visualize.
-    for idx in range(len(hand_landmarks_list)):
-        hand_landmarks = hand_landmarks_list[idx]
-        handedness = handedness_list[idx]
+	def detect_async(self , frame):
+		input = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+		self.landmarker.detect_async(image = input, timestamp_ms = int(time.time() * 1000))
+
+	def close(self):
+		self.landmarker.close()
+		
+def DrawLandmarks(image, DetectionResult: mp.tasks.vision.HandLandmarkerResult):
+  try:
+    if DetectionResult.hand_landmarks == []: # Empty
+      return image
+    else:
+      HandLandmarksList = DetectionResult.hand_landmarks
+      AnnotatedImage = np.copy(image)
+
+      # Loop through the detected hands to visualize.
+      for i in range(len(HandLandmarksList)):
+        HandLandmarks = HandLandmarksList[i]
+          
         # Draw the hand landmarks.
         hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
         hand_landmarks_proto.landmark.extend([
-          landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) for landmark in hand_landmarks
-        ])
-        solutions.drawing_utils.draw_landmarks(
-          annotated_image,
-          hand_landmarks_proto,
-          solutions.hands.HAND_CONNECTIONS,
-          solutions.drawing_styles.get_default_hand_landmarks_style(),
-          solutions.drawing_styles.get_default_hand_connections_style())
-        # Get the top left corner of the detected hand's bounding box.
-        height, width, _ = annotated_image.shape
-        x_coordinates = [landmark.x for landmark in hand_landmarks]
-        y_coordinates = [landmark.y for landmark in hand_landmarks]
-        text_x = int(min(x_coordinates) * width)
-        text_y = int(min(y_coordinates) * height) - MARGIN
-        # Draw handedness (left or right hand) on the image.
-        cv.putText(annotated_image, f"{handedness[0].category_name}",
-                    (text_x, text_y), cv.FONT_HERSHEY_DUPLEX,
-                    FONT_SIZE, HANDEDNESS_TEXT_COLOR, FONT_THICKNESS, cv.LINE_AA)
-    return annotated_image
+        landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) for landmark in HandLandmarks])
+        mp.solutions.drawing_utils.draw_landmarks(
+              AnnotatedImage,
+              hand_landmarks_proto,
+              mp.solutions.hands.HAND_CONNECTIONS,
+              mp.solutions.drawing_styles.get_default_hand_landmarks_style(),
+              mp.solutions.drawing_styles.get_default_hand_connections_style())
+        return AnnotatedImage
+  except:
+    return image
+   
+def FingersRaised(image , DetectionResult: mp.tasks.vision.HandLandmarkerResult):
+	try:
+		# Data
+		HandLandMarksList = DetectionResult.hand_landmarks
 
-def GetAnnotationFrom(frame):
-    Input = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
-    detection_result = landmarker.detect(Input)
-    annotated_image = draw_landmarks_on_image(Input.numpy_view(), detection_result)
-    
-    return detection_result, annotated_image
+		Raised = [False , False , False , False , False]
+		NumRaised = 0
 
-#Feed data and run landmarker
+		for i in range(len(HandLandMarksList)):
+			HandLandmarks = HandLandMarksList[i]
+
+			# All fingers excluding thumb
+			for j in range (8,21,4):
+				TipY = HandLandmarks[j].y
+				DipY = HandLandmarks[j-1].y
+				PipY = HandLandmarks[j-2].y
+				McpY = HandLandmarks[j-3].y
+				if TipY < min(DipY,PipY,McpY):
+					Raised[int((j/4)-1)] = True
+					NumRaised += 1
+			#Thumb
+			TipX = HandLandmarks[4].x
+			DipX = HandLandmarks[3].x 
+			McpX = HandLandmarks[1].x 
+			PipX = HandLandmarks[2].x
+			PalmX =HandLandmarks[0].x 
+
+			#Left
+			if (TipX < PalmX):
+				if (TipX < min(DipX,PipX,McpX)):
+					Raised[0] = True
+					NumRaised += 1
+			else:
+				if (TipX > max(DipX,PipX,McpX)):
+					Raised[0] = True
+					NumRaised += 1
+			
+			print("FingerNum: "+str(NumRaised))
+			for p in range(5):
+				print("Finger "+str(p)+" : "+str(Raised[p]))
+	except:
+		print("Error")
+		
 #Open Camera and capture livefeed
-while Cam.isOpened():
-	ret , frame = Cam.read()
-	if not ret:
-		break
-	DetectionResult , OutputFrame = GetAnnotationFrom(frame)
-	cv.imshow(WindowName , OutputFrame)
-	c = cv.waitKey(10)
-	if (c == 27):
-		break
-Cam.release()
-cv.destroyAllWindows()
+def main():
+	landmarker = LandmarkerAndResult()
+	while Cam.isOpened():
+		ret , frame = Cam.read()
+		landmarker.detect_async(frame)
+		frame = DrawLandmarks(frame,landmarker.result)
+		FingersRaised(frame , landmarker.result)
+		cv.imshow(WindowName , frame)
+		c = cv.waitKey(5)
+		if (c == 27):
+			break
+	landmarker.close()
+	Cam.release()
+	cv.destroyAllWindows()
 
+if __name__ == '__main__':
+	main()
